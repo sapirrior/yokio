@@ -2,9 +2,9 @@
 
 use crate::io::interest::{Interest, Mode, Ready};
 use crate::key::Key;
+use crate::sys::types::RawFd;
 use crate::task::callback::InlineFnMut;
 use crate::task::slab::Slab;
-use std::os::fd::RawFd;
 
 pub(crate) struct WatchEntry {
     pub(crate) fd: RawFd,

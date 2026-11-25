@@ -8,7 +8,7 @@ use crate::io::watch::Watch;
 use crate::key::Key;
 use crate::runtime::handle::Handle;
 use crate::runtime::shared::{Msg, Shared};
-use crate::sys::{Doorbell, Events, Selector};
+use crate::sys::{os_flags, Doorbell, Events, RawFd, Selector};
 use crate::task::callback::InlineFnOnce;
 use crate::task::cancel::{Task, Timer};
 use crate::task::slab::Slab;
@@ -77,11 +77,7 @@ impl LoopCore {
         let selector = Selector::new()?;
 
         #[allow(clippy::cast_sign_loss)]
-        selector.register(
-            doorbell.raw_fd(),
-            Key::DOORBELL_TOKEN,
-            (libc::EPOLLIN | libc::EPOLLET) as u32,
-        )?;
+        selector.register(doorbell.raw_fd(), Key::DOORBELL_TOKEN, os_flags::DOORBELL)?;
 
         let clock = Clock::system();
         let cached_now = Cell::new(clock.instant());
@@ -230,7 +226,7 @@ impl LoopCore {
     /// Registers a new I/O source to watch for readiness events.
     pub(crate) fn register_watch<F: FnMut(Ready) + 'static>(
         &self,
-        fd: std::os::fd::RawFd,
+        fd: RawFd,
         interest: Interest,
         mode: Mode,
         refd: bool,
@@ -238,7 +234,7 @@ impl LoopCore {
     ) -> Result<Watch> {
         let cb = crate::task::callback::InlineFnMut::new(f);
         let key = self.io.borrow_mut().insert(fd, interest, mode, refd, cb);
-        let flags = interest.to_epoll(mode);
+        let flags = interest.to_os_flags(mode);
         if let Err(e) = self.selector.register(fd, key.to_u64(), flags) {
             self.io.borrow_mut().cancel(key);
             return Err(e.into());
@@ -264,7 +260,7 @@ impl LoopCore {
             return Err(crate::error::Error::InvalidArgument("invalid watch handle"));
         };
         entry.interest = interest;
-        let flags = interest.to_epoll(entry.mode);
+        let flags = interest.to_os_flags(entry.mode);
         self.selector.reregister(entry.fd, key.to_u64(), flags)?;
         Ok(())
     }
@@ -276,7 +272,7 @@ impl LoopCore {
             return Err(crate::error::Error::InvalidArgument("invalid watch handle"));
         };
         entry.armed = true;
-        let flags = entry.interest.to_epoll(entry.mode);
+        let flags = entry.interest.to_os_flags(entry.mode);
         self.selector.reregister(entry.fd, key.to_u64(), flags)?;
         Ok(())
     }

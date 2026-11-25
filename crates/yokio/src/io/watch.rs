@@ -4,8 +4,8 @@ use crate::error::Result;
 use crate::io::interest::{Interest, Mode, Ready};
 use crate::key::Key;
 use crate::runtime::context::with_core;
+use crate::sys::types::{AsRawFd, RawFd};
 use crate::task::cancel::{Cancel, CancelOnDrop};
-use std::os::fd::{AsRawFd, RawFd};
 
 /// Trait implemented by pollable I/O resources (sockets, pipes, stdin, etc.).
 pub trait AsSource {

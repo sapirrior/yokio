@@ -2,20 +2,29 @@
 
 pub(crate) mod doorbell;
 pub(crate) mod events;
+pub(crate) mod flags;
+pub(crate) mod types;
+
+pub(crate) use flags::os_flags;
+#[allow(unused_imports)]
+pub(crate) use types::{AsRawFd, RawFd};
 
 #[cfg(target_os = "linux")]
 pub(crate) mod epoll;
-
-#[allow(unused_imports)]
 #[cfg(target_os = "linux")]
 pub(crate) use epoll::Selector;
+
+#[cfg(target_os = "windows")]
+pub(crate) mod windows;
+#[cfg(target_os = "windows")]
+pub(crate) use windows::Selector;
 
 #[allow(unused_imports)]
 pub(crate) use doorbell::Doorbell;
 #[allow(unused_imports)]
 pub(crate) use events::Events;
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use crate::key::Key;
@@ -29,11 +38,7 @@ mod tests {
         let doorbell = Arc::new(Doorbell::new().expect("failed to create doorbell"));
 
         selector
-            .register(
-                doorbell.raw_fd(),
-                Key::DOORBELL_TOKEN,
-                (libc::EPOLLIN | libc::EPOLLET) as u32,
-            )
+            .register(doorbell.raw_fd(), Key::DOORBELL_TOKEN, os_flags::DOORBELL)
             .expect("failed to register doorbell");
 
         let mut events = Events::with_capacity(16);
@@ -57,7 +62,7 @@ mod tests {
 
         let (token, ready) = events.iter().next().unwrap();
         assert_eq!(token, Key::DOORBELL_TOKEN);
-        assert_ne!(ready & (libc::EPOLLIN as u32), 0);
+        assert_ne!(ready & os_flags::READABLE, 0);
 
         doorbell.drain();
         handle.join().unwrap();

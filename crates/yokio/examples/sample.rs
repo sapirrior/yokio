@@ -1,13 +1,13 @@
 //! Sample demonstrating Yokio's complete execution engine:
 //! - Entry macro: `#[yokio::main]`
 //! - Run-to-completion callbacks: `yokio::task`, `yokio::after`, `yokio::every`
-//! - I/O readiness watching: `yokio::watch` on non-blocking sockets
+//! - I/O readiness watching: `yokio::watcher` on non-blocking sockets
 //! - Elastic blocking thread pool: `yokio::blocking`
 
 use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
+use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
-use yokio::io::Interest;
+use yokio::io::{Interest, Mode};
 
 #[yokio::main]
 fn main() {
@@ -35,19 +35,23 @@ fn main() {
         }
     });
 
-    // 3. I/O Readiness: Watch a non-blocking Unix socket
-    let (reader, mut writer) = UnixStream::pair().expect("failed to create socketpair");
-    reader.set_nonblocking(true).unwrap();
-    writer.set_nonblocking(true).unwrap();
+    // 3. I/O Readiness: Watch a non-blocking TCP socket
+    let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind");
+    let addr = listener.local_addr().expect("failed to get local addr");
+    let client = TcpStream::connect(addr).expect("failed to connect");
+    let (server, _) = listener.accept().expect("failed to accept");
 
-    let mut reader_clone = reader.try_clone().unwrap();
-    let _watch = yokio::watcher(&reader)
+    server.set_nonblocking(true).unwrap();
+    client.set_nonblocking(true).unwrap();
+
+    let mut server_clone = server.try_clone().unwrap();
+    let _watch = yokio::watcher(&server)
         .interest(Interest::READABLE)
-        .mode(yokio::io::Mode::Edge)
+        .mode(Mode::Edge)
         .start(move |ready| {
             if ready.is_readable() {
                 let mut buf = [0u8; 32];
-                if let Ok(n) = reader_clone.read(&mut buf) {
+                if let Ok(n) = server_clone.read(&mut buf) {
                     if n > 0 {
                         let msg = String::from_utf8_lossy(&buf[..n]);
                         println!("[I/O Watcher] Received message over socket: {msg}");
@@ -60,7 +64,8 @@ fn main() {
     // Send a message over the socket from a background thread
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(10));
-        let _ = writer.write_all(b"Hello from socket!");
+        let mut client = client;
+        let _ = client.write_all(b"Hello from socket!");
     });
 
     // 4. Elastic Blocking Pool: Run heavy/blocking work off the loop

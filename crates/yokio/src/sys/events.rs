@@ -2,10 +2,19 @@
 
 #![allow(unsafe_code)]
 
+#[cfg(target_os = "windows")]
+#[derive(Copy, Clone, Default)]
+pub(crate) struct WinEvent {
+    pub(crate) token: u64,
+    pub(crate) events: u32,
+}
+
 /// Reusable buffer containing OS readiness events from poll.
 pub(crate) struct Events {
     #[cfg(target_os = "linux")]
     pub(crate) raw: Vec<libc::epoll_event>,
+    #[cfg(target_os = "windows")]
+    pub(crate) raw: Vec<WinEvent>,
     pub(crate) len: usize,
 }
 
@@ -19,23 +28,18 @@ impl Events {
             raw.resize(cap, libc::epoll_event { events: 0, u64: 0 });
             Self { raw, len: 0 }
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "windows")]
         {
-            Self { len: 0 }
+            let mut raw = Vec::with_capacity(cap);
+            raw.resize(cap, WinEvent::default());
+            Self { raw, len: 0 }
         }
     }
 
     /// Total event capacity of the buffer.
     #[inline]
     pub(crate) fn capacity(&self) -> usize {
-        #[cfg(target_os = "linux")]
-        {
-            self.raw.len()
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            0
-        }
+        self.raw.len()
     }
 
     /// Whether there are no ready events.
@@ -62,6 +66,10 @@ impl Events {
         #[cfg(target_os = "linux")]
         {
             self.raw[..self.len].iter().map(|ev| (ev.u64, ev.events))
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.raw[..self.len].iter().map(|ev| (ev.token, ev.events))
         }
     }
 }

@@ -1,5 +1,6 @@
 //! Readiness interest and event notification bitflags.
 
+use crate::sys::os_flags;
 use std::ops::{BitOr, BitOrAssign};
 
 /// I/O readiness interest to register with the event loop.
@@ -26,35 +27,22 @@ impl Interest {
         (self.0 & Self::WRITABLE.0) != 0
     }
 
-    /// Converts interest and trigger mode into Linux epoll event flags.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn to_epoll(self, mode: Mode) -> u32 {
+    /// Converts interest and trigger mode into platform OS event flags.
+    pub(crate) fn to_os_flags(self, mode: Mode) -> u32 {
         let mut flags = 0u32;
         if self.is_readable() {
-            #[allow(clippy::cast_sign_loss)]
-            {
-                flags |= (libc::EPOLLIN | libc::EPOLLRDHUP | libc::EPOLLPRI) as u32;
-            }
+            flags |= os_flags::READABLE;
         }
         if self.is_writable() {
-            #[allow(clippy::cast_sign_loss)]
-            {
-                flags |= libc::EPOLLOUT as u32;
-            }
+            flags |= os_flags::WRITABLE;
         }
         match mode {
             Mode::Level => {}
             Mode::Edge => {
-                #[allow(clippy::cast_sign_loss)]
-                {
-                    flags |= libc::EPOLLET as u32;
-                }
+                flags |= os_flags::EDGE;
             }
             Mode::Oneshot => {
-                #[allow(clippy::cast_sign_loss)]
-                {
-                    flags |= libc::EPOLLONESHOT as u32;
-                }
+                flags |= os_flags::ONESHOT;
             }
         }
         flags
@@ -97,76 +85,31 @@ impl Ready {
     /// Whether the source has data available to read.
     #[inline]
     pub fn is_readable(self) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            #[allow(clippy::cast_sign_loss)]
-            let mask = (libc::EPOLLIN | libc::EPOLLPRI | libc::EPOLLRDHUP) as u32;
-            (self.0 & mask) != 0
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
+        (self.0 & os_flags::READABLE) != 0
     }
 
     /// Whether the source can accept writes without blocking.
     #[inline]
     pub fn is_writable(self) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            #[allow(clippy::cast_sign_loss)]
-            let mask = libc::EPOLLOUT as u32;
-            (self.0 & mask) != 0
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
+        (self.0 & os_flags::WRITABLE) != 0
     }
 
     /// Whether the source encountered an error condition.
     #[inline]
     pub fn is_error(self) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            #[allow(clippy::cast_sign_loss)]
-            let mask = libc::EPOLLERR as u32;
-            (self.0 & mask) != 0
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
+        (self.0 & os_flags::ERROR) != 0
     }
 
     /// Whether the source was hung up or remote end disconnected.
     #[inline]
     pub fn is_hup(self) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            #[allow(clippy::cast_sign_loss)]
-            let mask = (libc::EPOLLHUP | libc::EPOLLRDHUP) as u32;
-            (self.0 & mask) != 0
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
+        (self.0 & os_flags::HUP) != 0
     }
 
     /// Whether the read side of the connection is closed.
     #[inline]
     pub fn is_read_closed(self) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            #[allow(clippy::cast_sign_loss)]
-            let mask = libc::EPOLLRDHUP as u32;
-            (self.0 & mask) != 0
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
+        (self.0 & os_flags::RDHUP) != 0
     }
 
     /// Whether the write side is closed or disconnected.
