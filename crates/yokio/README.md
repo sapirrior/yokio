@@ -10,7 +10,7 @@ Yokio brings the battle-tested, single-threaded event loop model (proven by Node
 
 ---
 
-## 💡 The Sweet Spot: Why Developers Love Yokio
+## 💡 The Sweet Spot: Why You'll Love Yokio
 
 If you've ever wrestled with Rust's `async fn`, `Send + Sync` compiler walls, or complicated lifetimes across `.await` points, Yokio feels like fresh air:
 
