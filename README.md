@@ -4,25 +4,28 @@
 [![Documentation](https://docs.rs/yokio/badge.svg)](https://docs.rs/yokio)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A **callback-native asynchronous execution engine** for Rust.
+A **callback-native asynchronous execution engine** for Rust. Fast, lightweight, and delightfully simple.
 
-Yokio owns an event loop, runs run-to-completion closures (not futures) to completion, manages an $O(1)$ hierarchical timing wheel, dispatches OS readiness events via `epoll`, and coordinates off-thread blocking operations with an elastic worker pool.
+Yokio brings the battle-tested, single-threaded event loop model (proven by Node.js, Nginx, and Redis) to high-performance Rust systems engineering.
 
 ---
 
-## Why Yokio?
+## 💡 The Sweet Spot: Why Developers Love Yokio
 
-Modern Rust async is built on `Future`, `Poll`, `Waker`, and `Pin`. While powerful, state machines and pinned futures introduce significant cognitive overhead, complex lifetimes, and atomic synchronization costs across threads.
+If you've ever wrestled with Rust's `async fn`, `Send + Sync` compiler walls, or complicated lifetimes across `.await` points, Yokio feels like fresh air:
 
-Yokio takes a different path, combining the proven single-threaded simplicity of **libuv / Node.js** with high-performance Rust systems engineering:
-
-* **No `async`/`await` Machinery**: Tasks are run-to-completion closures (`FnOnce()`), and timers/watchers are `FnMut()`. No suspension points, no state machines, and no wakers.
-* **Shared-Nothing Single-Threaded Loops**: Callbacks require only `'static` (NOT `Send`). You can freely share mutable state via `Rc<RefCell<T>>` without paying the atomic `Arc<Mutex<T>>` synchronization tax.
-* **Zero Allocation on Hot Paths**: Closures up to 48 bytes are stored inline without heap allocation.
-* **Amortized $O(1)$ Timers**: High-performance 6-level hierarchical timing wheel (ported from Tokio's timer architecture). Drift-free recurring intervals with customizable missed-tick policies (`Skip`, `Burst`, `Delay`).
-* **OS Readiness Watching**: Direct non-blocking I/O event monitoring via Linux `epoll` with Level, Edge, and Oneshot trigger modes.
-* **Elastic Blocking Thread Pool**: Automatically scales up to 256 worker threads to run synchronous disk/CPU work off the loop, returning results safely back to loop callbacks.
-* **Zero-Dependency Entry Macro**: `#[yokio::main]` and `#[yokio::test]` powered by standard-library proc macros without pulling in `syn` or `quote`.
+* **⚡ Turn ANY Synchronous Code Into Non-Blocking Async (`yokio::blocking`)**:
+  Want to use standard synchronous libraries like `std::fs`, `rusqlite`, `ureq`, `csv`, or image processing? Don't rewrite them as futures! Run them off-thread with `yokio::blocking()`. Yokio scales worker threads automatically and returns the result safely back to your event loop callback.
+* **🤝 Plays Perfectly With Tokio or Any Async Stack**:
+  You don't have to choose either-or! Run a Yokio event loop inside a Tokio background thread, or trigger Tokio tasks from Yokio. Yokio's cross-thread `Handle` lets background threads inject work into the loop without blocking.
+* **🧠 No `async`/`await` Function Coloring**:
+  In standard async Rust, making one function `async` forces every caller up the tree to become `async`. In Yokio, your code stays plain, regular, synchronous Rust functions.
+* **🔒 Zero `Arc<Mutex<T>>` Tax**:
+  Because the loop is single-threaded and shared-nothing, callbacks only need `'static` (NOT `Send`). Share state easily with plain `Rc<RefCell<T>>`—no locks, no deadlocks, and no atomic performance penalties.
+* **🪶 Zero Heavy Dependencies**:
+  Compiles in under 2 seconds. No giant dependency trees, no bloat. Pure standard library plus OS kernel bindings (`epoll` on Linux, `kqueue` on macOS, `WSAPoll` on Windows).
+* **🎯 No Cancellation Hazards**:
+  Futures can be dropped mid-execution at any `.await` point, leaving state corrupted. In Yokio, callbacks run to completion—once triggered, they finish cleanly.
 
 ---
 
