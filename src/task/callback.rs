@@ -67,7 +67,16 @@ impl<A: 'static> InlineFnOnce<A> {
             (this.vt.call)(this.buf.as_mut_ptr(), arg);
         }
     }
+}
 
+impl InlineFnOnce<()> {
+    /// Constructs an `InlineFnOnce<()>` from a 0-argument closure.
+    pub(crate) fn from_fn<F: FnOnce() + 'static>(f: F) -> Self {
+        Self::new(move |()| f())
+    }
+}
+
+impl<A: 'static> InlineFnOnce<A> {
     unsafe fn call_inline<F: FnOnce(A)>(ptr: *mut AlignedBuffer, arg: A) {
         // SAFETY: caller guarantees ptr points to a valid F
         let f = unsafe { std::ptr::read(ptr.cast::<F>()) };
@@ -156,7 +165,16 @@ impl<A: 'static> InlineFnMut<A> {
             (self.vt.call_mut)(self.buf.as_mut_ptr(), arg);
         }
     }
+}
 
+impl InlineFnMut<()> {
+    /// Constructs an `InlineFnMut<()>` from a 0-argument mutable closure.
+    pub(crate) fn from_fn<F: FnMut() + 'static>(mut f: F) -> Self {
+        Self::new(move |()| f())
+    }
+}
+
+impl<A: 'static> InlineFnMut<A> {
     unsafe fn call_mut_inline<F: FnMut(A)>(ptr: *mut AlignedBuffer, arg: A) {
         // SAFETY: caller guarantees ptr points to a valid F
         let f = unsafe { &mut *ptr.cast::<F>() };

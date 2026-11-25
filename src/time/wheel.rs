@@ -61,6 +61,24 @@ pub(crate) struct TimerEntry {
     next: u32,
 }
 
+impl TimerEntry {
+    pub(crate) fn new(when: u64, period: u64, missed: Missed, remaining: u32, cb: TimerCb) -> Self {
+        Self {
+            when,
+            period,
+            missed,
+            remaining,
+            state: TimerState::Armed,
+            refd: true,
+            cb,
+            level: 0,
+            slot: 0,
+            prev: Key::NIL,
+            next: Key::NIL,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Level {
     occupied: u64,
