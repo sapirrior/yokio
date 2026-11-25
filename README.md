@@ -1,92 +1,152 @@
 # Yokio
 
 [![Crates.io](https://img.shields.io/crates/v/yokio.svg)](https://crates.io/crates/yokio)
-[![Documentation](https://docs.rs/yokio/badge.svg)](https://docs.rs/yokio)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Docs.rs](https://docs.rs/yokio/badge.svg)](https://docs.rs/yokio)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A **callback-native asynchronous execution engine** for Rust. Fast, lightweight, and delightfully simple.
+A callback-native asynchronous execution engine for Rust.
 
-Yokio brings the battle-tested, single-threaded event loop model (proven by Node.js, Nginx, and Redis) to high-performance Rust systems engineering.
+Yokio owns an event loop and runs plain callbacks to completion. It fires timers, dispatches OS readiness events, coordinates work between threads without blocking the loop, and runs blocking jobs on an elastic worker pool. It does not use `async`/`await`, `Future`, or `Waker`.
 
----
+## Contents
 
-## 💡 The Sweet Spot: Why You'll Love Yokio
+- [Design](#design)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Usage](#usage)
+  - [Tasks and timers](#tasks-and-timers)
+  - [Cancellation](#cancellation)
+  - [Blocking work](#blocking-work)
+  - [I/O readiness](#io-readiness)
+  - [Working across threads](#working-across-threads)
+  - [Embedding the runtime](#embedding-the-runtime)
+  - [Testing](#testing)
+- [API overview](#api-overview)
+- [Feature flags](#feature-flags)
+- [Platform support](#platform-support)
+- [Status](#status)
+- [License](#license)
 
-If you've ever wrestled with Rust's `async fn`, `Send + Sync` compiler walls, or complicated lifetimes across `.await` points, Yokio feels like fresh air:
+## Design
 
-* **⚡ Turn ANY Synchronous Code Into Non-Blocking Async (`yokio::blocking`)**:
-  Want to use standard synchronous libraries like `std::fs`, `rusqlite`, `ureq`, `csv`, or image processing? Don't rewrite them as futures! Run them off-thread with `yokio::blocking()`. Yokio scales worker threads automatically and returns the result safely back to your event loop callback.
-* **🤝 Plays Perfectly With Tokio or Any Async Stack**:
-  You don't have to choose either-or! Run a Yokio event loop inside a Tokio background thread, or trigger Tokio tasks from Yokio. Yokio's cross-thread `Handle` lets background threads inject work into the loop without blocking.
-* **🧠 No `async`/`await` Function Coloring**:
-  In standard async Rust, making one function `async` forces every caller up the tree to become `async`. In Yokio, your code stays plain, regular, synchronous Rust functions.
-* **🔒 Zero `Arc<Mutex<T>>` Tax**:
-  Because the loop is single-threaded and shared-nothing, callbacks only need `'static` (NOT `Send`). Share state easily with plain `Rc<RefCell<T>>`—no locks, no deadlocks, and no atomic performance penalties.
-* **🪶 Zero Heavy Dependencies**:
-  Compiles in under 2 seconds. No giant dependency trees, no bloat. Pure standard library plus OS kernel bindings (`epoll` on Linux, `kqueue` on macOS, `WSAPoll` on Windows).
-* **🎯 No Cancellation Hazards**:
-  Futures can be dropped mid-execution at any `.await` point, leaving state corrupted. In Yokio, callbacks run to completion—once triggered, they finish cleanly.
+- **Callbacks, not futures.** Work is expressed as closures. Once a callback starts, it runs to completion before the loop moves on.
+- **One loop per thread.** A `Runtime` is single-threaded (`!Send`, `!Sync`). Callbacks passed to it only need to be `'static`, not `Send`, so they can share state through `Rc<RefCell<T>>` instead of `Arc<Mutex<T>>`.
+- **Blocking work stays off the loop.** Jobs submitted with `yokio::blocking` run on a worker pool. Their result is delivered back to a callback on the loop thread.
+- **Thread-safe entry point.** A `Handle` is `Send + Sync` and can be cloned to other threads to inject work into a running loop.
 
----
+Yokio takes its async model from the event-loop style popularised by Node.js. It is an independent Rust implementation with its own runtime, scheduler, timer wheel, and I/O layer.
 
-## Quick Start
-
-Add Yokio to your `Cargo.toml`:
+## Installation
 
 ```toml
 [dependencies]
 yokio = "0.1"
 ```
 
-### Basic Example
+To enable optional features:
+
+```toml
+[dependencies]
+yokio = { version = "0.1", features = ["fs"] }
+```
+
+## Quick start
 
 ```rust
 use std::time::Duration;
 
 #[yokio::main]
 fn main() {
-    // 1. One-shot task
-    yokio::task(|| {
-        println!("Hello from Yokio!");
-    });
+    // Run once on the next pass of the loop.
+    yokio::task(|| println!("hello from the event loop"));
 
-    // 2. Delayed timer
+    // Run once after a delay.
     yokio::after(Duration::from_millis(50), || {
-        println!("50ms timer fired!");
+        println!("50 ms elapsed");
     });
 
-    // 3. Recurring timer
-    let ticker = yokio::every(Duration::from_millis(20), {
-        let mut count = 0;
-        move || {
-            count += 1;
-            println!("Tick #{count}");
-            if count >= 3 {
-                yokio::stop(); // Terminates the event loop
-            }
+    // Run repeatedly, then stop the loop.
+    let mut ticks = 0;
+    let _ticker = yokio::every(Duration::from_millis(20), move || {
+        ticks += 1;
+        println!("tick {ticks}");
+        if ticks == 3 {
+            yokio::stop();
         }
     });
-
-    // 4. Cancel a timer
-    let cancelled = yokio::after(Duration::from_secs(10), || {
-        unreachable!();
-    });
-    cancelled.cancel();
 }
 ```
 
----
+`#[yokio::main]` is applied to a regular, non-`async` `fn main`. It creates the runtime, runs your body, and drives the event loop until it is idle or `yokio::stop()` is called.
 
-## Core Features
+## Usage
 
-### 1. I/O Readiness Watching (`yokio::watch`)
+### Tasks and timers
 
-Monitor any pollable file descriptor (sockets, pipes, stdin) using non-blocking OS readiness:
+| Function | Purpose |
+|:--|:--|
+| `yokio::task(f)` | Schedule a one-shot callback on the current thread's loop. |
+| `yokio::after(delay, f)` | Schedule a one-shot timer. |
+| `yokio::every(period, f)` | Schedule a recurring timer. |
+| `yokio::now()` | The `Instant` cached at the start of the current tick. |
+| `yokio::stop()` | Ask the runtime to stop after the current tick completes. |
+
+`task` and `after` take an `FnOnce() + 'static`. `every` takes an `FnMut() + 'static`.
+
+### Cancellation
+
+`task`, `after`, and `every` return a `Task` or `Timer` handle. Both implement the `Cancel` trait.
 
 ```rust
-use std::io::Read;
+use std::time::Duration;
+
+#[yokio::main]
+fn main() {
+    let timer = yokio::after(Duration::from_secs(10), || {
+        println!("this never runs");
+    });
+    timer.cancel();
+}
+```
+
+`CancelOnDrop` wraps a handle so the work is cancelled when the wrapper is dropped.
+
+### Blocking work
+
+`yokio::blocking(job, done)` runs `job` on the worker pool and calls `done` with its result on the event loop.
+
+```rust
+use std::time::Duration;
+
+#[yokio::main]
+fn main() {
+    yokio::blocking(
+        || {
+            // Runs on a worker thread.
+            std::thread::sleep(Duration::from_millis(100));
+            42 * 2
+        },
+        |result| {
+            // Runs on the event loop.
+            println!("result: {result}");
+            yokio::stop();
+        },
+    );
+}
+```
+
+The job must be `Send + 'static` and so must its return value. The `done` callback only needs to be `'static`.
+
+Use `yokio::blocking_detached(job)` when you do not need a completion callback.
+
+### I/O readiness
+
+`yokio::watch` registers a callback that fires when an I/O source becomes ready. `yokio::watcher` returns a `WatchBuilder` for configuring interest and trigger mode before starting the watch.
+
+```rust
+use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
-use yokio::io::{Interest, Mode};
+use yokio::{Interest, Mode};
 
 #[yokio::main]
 fn main() {
@@ -100,44 +160,22 @@ fn main() {
             if ready.is_readable() {
                 let mut buf = [0u8; 64];
                 if let Ok(n) = reader.read(&mut buf) {
-                    println!("Received: {}", String::from_utf8_lossy(&buf[..n]));
+                    println!("received: {}", String::from_utf8_lossy(&buf[..n]));
                     yokio::stop();
                 }
             }
         })
         .unwrap();
 
-    let _ = writer.write_all(b"Hello from socket!");
+    writer.write_all(b"hello").unwrap();
 }
 ```
 
-### 2. Elastic Blocking Pool (`yokio::blocking`)
+Sources must implement `AsSource`.
 
-Run synchronous, blocking, or CPU-intensive work on dedicated worker threads without stalling the event loop:
+### Working across threads
 
-```rust
-use std::time::Duration;
-
-#[yokio::main]
-fn main() {
-    yokio::blocking(
-        || {
-            // Runs on an off-thread worker
-            std::thread::sleep(Duration::from_millis(100));
-            42 * 2
-        },
-        |result| {
-            // Result delivered safely back to the event loop callback
-            println!("Computation completed: {result}");
-            yokio::stop();
-        },
-    );
-}
-```
-
-### 3. Cross-Thread Interaction (`Handle`)
-
-Inject tasks into a running event loop from background threads:
+`yokio::handle()` returns a cloneable `Handle` for the current runtime. A `Handle` can be sent to other threads to inject work into the loop or control it.
 
 ```rust
 #[yokio::main]
@@ -145,64 +183,83 @@ fn main() {
     let handle = yokio::handle();
 
     std::thread::spawn(move || {
-        handle.post(|| {
-            println!("Injected from an external background thread!");
-            yokio::stop();
-        }).unwrap();
+        handle
+            .post(|| {
+                println!("running on the event loop");
+                yokio::stop();
+            })
+            .unwrap();
     });
 }
 ```
 
-### 4. Asynchronous Filesystem (`features = ["fs"]`)
+A `KeepAlive` token prevents the loop from exiting while it is held, which is useful when work will arrive later from another thread.
 
-Offload blocking disk I/O to the elastic worker pool with zero async machinery:
+### Embedding the runtime
+
+The attribute macro is a convenience. You can also create and drive a `Runtime` yourself.
 
 ```rust
-use yokio::fs;
+use yokio::Runtime;
 
-#[yokio::main]
-fn main() {
-    fs::read_to_string("config.toml", |result| {
-        match result {
-            Ok(content) => println!("Config: {content}"),
-            Err(e) => eprintln!("Read failed: {e}"),
-        }
-    });
+fn main() -> yokio::Result<()> {
+    let rt = Runtime::new()?;
+
+    rt.task(|| println!("hello"));
+
+    rt.run() // runs until idle or stopped
 }
 ```
 
----
+| Method | Purpose |
+|:--|:--|
+| `Runtime::new()` | Create a runtime with default capacity. |
+| `run()` | Drive the loop until idle or stopped. |
+| `run_with(main)` | Run a root closure inside the runtime and drive the loop to completion. |
+| `tick(max_wait)` | Run a single loop iteration and return a `TickStatus`. Useful for integrating with another loop. |
+| `enter()` | Make the runtime active on the current thread through an RAII `EnterGuard`. |
+| `handle()` | Get a thread-safe `Handle`. |
 
-## Event Loop Execution Cycle
+`Runtime` also exposes `task`, `after`, `every`, `watch`, `watcher`, `blocking`, and `blocking_detached` as methods.
 
-Each tick of Yokio's event loop executes in a deterministic normative phase order:
+### Testing
 
-```text
- 1. Update cached clock (yokio::now())
- 2. Expire Timing Wheel slots (O(1) amortized)
- 3. Drain Cross-Thread Inbox messages
- 4. Run ready tasks FIFO (bounded for fairness)
- 5. Drain Graveyard (deferred drops outside borrows)
- 6. Check liveness / stop requests
- 7. Sleep in OS Selector (epoll) with computed timeout
- 8. Dispatch I/O readiness events
+`#[yokio::test]` runs a test function inside a Yokio runtime. The `test-util` feature flag is available for test helpers.
+
+```rust
+#[yokio::test]
+fn timer_fires() {
+    yokio::after(std::time::Duration::from_millis(10), || yokio::stop());
+}
 ```
 
----
+## API overview
 
-## Comparison: Yokio vs Tokio vs libuv
+| Module | Contents |
+|:--|:--|
+| `yokio` | Top-level functions: `task`, `after`, `every`, `watch`, `watcher`, `blocking`, `blocking_detached`, `handle`, `now`, `stop`. Attribute macros `main` and `test`. |
+| `yokio::runtime` | `Runtime`, `Handle`, `KeepAlive`, `EnterGuard`, `TickStatus`. |
+| `yokio::task` | Task scheduling primitives, storage slabs, callback erasure, and the cancellation types `Task`, `Timer`, `Cancel`, `CancelOnDrop`. |
+| `yokio::time` | Clock and timing wheel. |
+| `yokio::io` | I/O readiness monitoring: `Watch`, `WatchBuilder`, `Interest`, `Mode`, `Ready`, `AsSource`. |
+| `yokio::blocking` | The elastic blocking pool and the `Blocking` handle for an in-flight job. |
+| `yokio::error` | `Error`, `Result`, `JobPanic`, `PanicInfo`, `CallbackKind`. |
 
-| Feature | Yokio | Tokio | libuv / Node.js |
-|:---|:---|:---|:---|
-| **Execution Model** | Run-to-completion Callbacks | Future State Machines | Callbacks |
-| **Threading** | Loop-per-thread (`Rc<RefCell>`) | Multi-thread Work-stealing | Single-thread (`uv_loop`) |
-| **Closure Allocations** | **0** (inline $\le 48$ B) | Boxed Future / Inline frame | V8 Heap Allocation |
-| **Timers** | Hierarchical Wheel ($O(1)$) | Hierarchical Wheel ($O(1)$) | Binary Min-Heap ($O(\log n)$) |
-| **Dependencies** | **0 external crates** (libc only) | Many crates | C library |
-| **Blocking Pool** | Elastic (up to 256 threads) | Elastic (up to 512 threads) | Static (default 4 threads) |
+Full API documentation is on [docs.rs](https://docs.rs/yokio).
 
----
+## Feature flags
+
+| Flag | Description |
+|:--|:--|
+| `fs` | Filesystem helpers that run blocking disk I/O on the worker pool and deliver results to callbacks. |
+| `test-util` | Utilities for testing code that runs on Yokio. |
+
+No features are enabled by default.
+
+## Platform support
+
+Yokio uses the operating system's readiness API for I/O: epoll on Linux, kqueue on macOS, and WSAPoll on Windows. It depends on `libc` and `windows-sys` for the platform bindings, and on `yokio-macros` for the attribute macros.
 
 ## License
 
-Licensed under the MIT License ([LICENSE](LICENSE) or <https://opensource.org/licenses/MIT>).
+Licensed under the [MIT License](LICENSE).
