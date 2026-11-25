@@ -4,7 +4,12 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "A callback-native asynchronous execution engine for Rust"
+readme = "README.md"
+keywords = ["async", "event-loop", "callbacks", "epoll", "timer"]
+categories = ["asynchronous", "network-programming"]
 
 [features]
 default = []

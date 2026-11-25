@@ -34,4 +34,4 @@ fn my_test() {
 
 ## License
 
-MIT OR Apache-2.0
+Licensed under the MIT License.
