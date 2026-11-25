@@ -17,6 +17,7 @@
 
 pub mod error;
 pub(crate) mod key;
+pub(crate) mod sys;
 pub(crate) mod task;
 pub mod time;
 
