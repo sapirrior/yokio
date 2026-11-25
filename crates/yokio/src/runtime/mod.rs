@@ -5,11 +5,14 @@ pub(crate) mod core;
 pub(crate) mod handle;
 pub(crate) mod shared;
 
+use crate::blocking::Blocking;
 use crate::error::Result;
 pub use context::EnterGuard;
 pub use core::TickStatus;
 pub use handle::{Handle, KeepAlive};
 
+use crate::io::interest::{Interest, Mode, Ready};
+use crate::io::watch::{AsSource, Watch, WatchBuilder};
 use crate::runtime::core::LoopCore;
 use crate::task::callback::{InlineFnMut, InlineFnOnce};
 use crate::task::cancel::{Task, Timer};
@@ -69,6 +72,37 @@ impl Runtime {
             u32::MAX,
             TimerCb::Repeat(Some(InlineFnMut::from_fn(f))),
         )
+    }
+
+    /// Watches an I/O source for readiness events.
+    pub fn watch<S: AsSource, F: FnMut(Ready) + 'static>(
+        &self,
+        src: &S,
+        interest: Interest,
+        f: F,
+    ) -> Result<Watch> {
+        self.core
+            .register_watch(src.raw_source(), interest, Mode::Level, true, f)
+    }
+
+    /// Obtains a `WatchBuilder` to configure advanced options on an I/O watcher.
+    pub fn watcher<'a, S: AsSource>(&self, src: &'a S) -> WatchBuilder<'a, S> {
+        WatchBuilder::new(src)
+    }
+
+    /// Submits a blocking job to the worker pool and invokes `done` on the event loop.
+    pub fn blocking<J, R, D>(&self, job: J, done: D) -> Blocking
+    where
+        J: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+        D: FnOnce(R) + 'static,
+    {
+        self.core.spawn_blocking(job, done)
+    }
+
+    /// Submits a blocking job without a completion callback.
+    pub fn blocking_detached<J: FnOnce() + Send + 'static>(&self, job: J) -> Blocking {
+        self.core.spawn_blocking_detached(job)
     }
 
     /// Executes a single event loop iteration.

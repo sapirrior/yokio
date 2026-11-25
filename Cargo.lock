@@ -87,4 +87,9 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "windows-sys",
+ "yokio-macros",
 ]
+
+[[package]]
+name = "yokio-macros"
+version = "0.1.0"

@@ -1,6 +1,10 @@
 //! Internal event loop core (`LoopCore`) managing tasks, timers, and I/O.
 
+use crate::blocking::{Blocking, BlockingPool};
 use crate::error::Result;
+use crate::io::interest::{Interest, Mode, Ready};
+use crate::io::registry::Registry;
+use crate::io::watch::Watch;
 use crate::key::Key;
 use crate::runtime::handle::Handle;
 use crate::runtime::shared::{Msg, Shared};
@@ -36,6 +40,12 @@ pub(crate) enum TaskState {
     Cancelled,
 }
 
+pub(crate) struct BlockingEntry {
+    pub(crate) cancelled: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) refd: bool,
+    pub(crate) cb: Option<Box<dyn std::any::Any>>,
+}
+
 pub(crate) struct TaskEntry {
     pub(crate) cb: Option<InlineFnOnce<()>>,
     pub(crate) state: TaskState,
@@ -51,6 +61,9 @@ pub(crate) struct LoopCore {
     clock: Clock,
     cached_now: Cell<Instant>,
     refs: Cell<usize>,
+    io: RefCell<Registry>,
+    blocking_pool: BlockingPool,
+    blocking: RefCell<Slab<BlockingEntry>>,
     pub(crate) shared: Arc<Shared>,
     graveyard: RefCell<Vec<Box<dyn std::any::Any>>>,
     max_tasks_per_tick: usize,
@@ -82,6 +95,9 @@ impl LoopCore {
             clock,
             cached_now,
             refs: Cell::new(0),
+            io: RefCell::new(Registry::new(capacity)),
+            blocking_pool: BlockingPool::new(256, Duration::from_secs(10)),
+            blocking: RefCell::new(Slab::with_capacity(capacity)),
             shared: Arc::new(Shared::new(doorbell)),
             graveyard: RefCell::new(Vec::new()),
             max_tasks_per_tick: 256,
@@ -206,8 +222,152 @@ impl LoopCore {
     pub(crate) fn is_alive(&self) -> bool {
         self.refs.get() > 0
             || !self.ready.borrow().is_empty()
+            || self.io.borrow().has_refd_watchers()
             || self.shared.external_refs.load(Ordering::Acquire) > 0
             || self.shared.has_messages()
+    }
+
+    /// Registers a new I/O source to watch for readiness events.
+    pub(crate) fn register_watch<F: FnMut(Ready) + 'static>(
+        &self,
+        fd: std::os::fd::RawFd,
+        interest: Interest,
+        mode: Mode,
+        refd: bool,
+        f: F,
+    ) -> Result<Watch> {
+        let cb = crate::task::callback::InlineFnMut::new(f);
+        let key = self.io.borrow_mut().insert(fd, interest, mode, refd, cb);
+        let flags = interest.to_epoll(mode);
+        if let Err(e) = self.selector.register(fd, key.to_u64(), flags) {
+            self.io.borrow_mut().cancel(key);
+            return Err(e.into());
+        }
+        Ok(Watch { key })
+    }
+
+    /// Cancels an active I/O watcher and deregisters it from the selector.
+    pub(crate) fn cancel_watch(&self, key: Key) -> bool {
+        let fd_opt = self.io.borrow_mut().cancel(key);
+        if let Some(fd) = fd_opt {
+            let _ = self.selector.deregister(fd);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Modifies registered interests for an active watcher.
+    pub(crate) fn modify_watch(&self, key: Key, interest: Interest) -> Result<()> {
+        let mut io = self.io.borrow_mut();
+        let Some(entry) = io.get_mut(key) else {
+            return Err(crate::error::Error::InvalidArgument("invalid watch handle"));
+        };
+        entry.interest = interest;
+        let flags = interest.to_epoll(entry.mode);
+        self.selector.reregister(entry.fd, key.to_u64(), flags)?;
+        Ok(())
+    }
+
+    /// Rearms an inactive oneshot watcher.
+    pub(crate) fn rearm_watch(&self, key: Key) -> Result<()> {
+        let mut io = self.io.borrow_mut();
+        let Some(entry) = io.get_mut(key) else {
+            return Err(crate::error::Error::InvalidArgument("invalid watch handle"));
+        };
+        entry.armed = true;
+        let flags = entry.interest.to_epoll(entry.mode);
+        self.selector.reregister(entry.fd, key.to_u64(), flags)?;
+        Ok(())
+    }
+
+    /// Submits a blocking job to the elastic worker pool and delivers the result back to the loop callback.
+    pub(crate) fn spawn_blocking<J, R, D>(&self, job: J, done: D) -> Blocking
+    where
+        J: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+        D: FnOnce(R) + 'static,
+    {
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Type-erase the loop-affine `done` callback so it stays strictly on this thread.
+        let done_box: Box<dyn FnOnce(R)> = Box::new(done);
+        let key = self.blocking.borrow_mut().insert(BlockingEntry {
+            cancelled: Arc::clone(&cancelled),
+            refd: true,
+            cb: Some(Box::new(done_box)),
+        });
+        self.refs.set(self.refs.get() + 1);
+
+        let handle = self.handle();
+        let cancelled_clone = Arc::clone(&cancelled);
+        self.blocking_pool.spawn(move || {
+            let res = job();
+            if cancelled_clone.load(Ordering::Acquire) {
+                let _ = handle.post(move || {
+                    let _ = crate::runtime::context::with_core(|core| {
+                        if let Some(entry) = core.blocking.borrow_mut().remove(key) {
+                            if entry.refd {
+                                core.refs.set(core.refs.get().saturating_sub(1));
+                            }
+                        }
+                    });
+                });
+            } else {
+                let _ = handle.post(move || {
+                    let _ = crate::runtime::context::with_core(|core| {
+                        core.complete_blocking(key, res);
+                    });
+                });
+            }
+        });
+
+        Blocking { key }
+    }
+
+    pub(crate) fn complete_blocking<R: 'static>(&self, key: Key, res: R) {
+        let entry_opt = self.blocking.borrow_mut().remove(key);
+        if let Some(mut entry) = entry_opt {
+            if entry.refd {
+                self.refs.set(self.refs.get().saturating_sub(1));
+            }
+            if !entry.cancelled.load(Ordering::Acquire) {
+                if let Some(any_cb) = entry.cb.take() {
+                    if let Ok(boxed_fn) = any_cb.downcast::<Box<dyn FnOnce(R)>>() {
+                        let _ = catch_unwind(AssertUnwindSafe(move || {
+                            boxed_fn(res);
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Unreferences an I/O watcher.
+    pub(crate) fn unref_watch(&self, key: Key) {
+        self.io.borrow_mut().unref(key);
+    }
+
+    /// Cancels an in-flight blocking callback.
+    pub(crate) fn cancel_blocking(&self, key: Key) -> bool {
+        if let Some(entry) = self.blocking.borrow_mut().remove(key) {
+            entry.cancelled.store(true, Ordering::Release);
+            if entry.refd {
+                self.refs.set(self.refs.get().saturating_sub(1));
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Checks if a blocking job is still pending.
+    pub(crate) fn is_blocking_pending(&self, key: Key) -> bool {
+        self.blocking.borrow().contains(key)
+    }
+
+    /// Submits a detached blocking job with no return callback.
+    pub(crate) fn spawn_blocking_detached<J: FnOnce() + Send + 'static>(&self, job: J) -> Blocking {
+        self.spawn_blocking(job, |()| {})
     }
 
     #[allow(clippy::too_many_lines)]
@@ -358,9 +518,33 @@ impl LoopCore {
 
         // Step 10: Dispatch Events
         let events_guard = self.events.borrow();
-        for (token, _ready) in events_guard.iter() {
+        for (token, ready_flags) in events_guard.iter() {
             if token == Key::DOORBELL_TOKEN {
                 self.shared.doorbell.drain();
+            } else {
+                let key = Key::from_u64(token);
+                let ready = Ready(ready_flags);
+                let mut cb_opt = None;
+                {
+                    let mut io = self.io.borrow_mut();
+                    if let Some(entry) = io.get_mut(key) {
+                        if entry.armed {
+                            cb_opt = entry.cb.take();
+                            if entry.mode == Mode::Oneshot {
+                                entry.armed = false;
+                            }
+                        }
+                    }
+                }
+                if let Some(mut cb) = cb_opt {
+                    let _ = catch_unwind(AssertUnwindSafe(|| {
+                        cb.call(ready);
+                    }));
+                    let mut io = self.io.borrow_mut();
+                    if let Some(entry) = io.get_mut(key) {
+                        entry.cb = Some(cb);
+                    }
+                }
             }
         }
 

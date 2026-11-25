@@ -1,0 +1,12 @@
+[package]
+name = "yokio-macros"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Zero-dependency procedural entry macros for Yokio"
+
+[lib]
+proc-macro = true
+
+[dependencies]
