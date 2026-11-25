@@ -150,6 +150,24 @@ fn main() {
 }
 ```
 
+### 4. Asynchronous Filesystem (`features = ["fs"]`)
+
+Offload blocking disk I/O to the elastic worker pool with zero async machinery:
+
+```rust
+use yokio::fs;
+
+#[yokio::main]
+fn main() {
+    fs::read_to_string("config.toml", |result| {
+        match result {
+            Ok(content) => println!("Config: {content}"),
+            Err(e) => eprintln!("Read failed: {e}"),
+        }
+    });
+}
+```
+
 ---
 
 ## Event Loop Execution Cycle

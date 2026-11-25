@@ -17,6 +17,8 @@
 
 pub mod blocking;
 pub mod error;
+#[cfg(feature = "fs")]
+pub mod fs;
 pub mod io;
 pub(crate) mod key;
 pub mod runtime;
