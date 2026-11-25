@@ -19,6 +19,16 @@ fn macro_test_executes_task_and_timer() {
     yokio::after(Duration::from_millis(15), move || {
         tm_ran.store(true, Ordering::SeqCst);
     });
+}
 
-    // The test function returns, and #[yokio::test] drives the runtime until all work drains!
+#[yokio::test]
+fn macro_test_with_return_result() -> Result<(), Box<dyn std::error::Error>> {
+    let flag = Arc::new(AtomicBool::new(false));
+    let flag_clone = Arc::clone(&flag);
+
+    yokio::task(move || {
+        flag_clone.store(true, Ordering::SeqCst);
+    });
+
+    Ok(())
 }

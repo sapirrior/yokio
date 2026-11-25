@@ -26,97 +26,55 @@ fn expand_entry(item: TokenStream, is_test: bool) -> TokenStream {
         }
     }
 
-    let mut i = 0;
-    let mut vis = String::new();
-    while i < trees.len() {
-        if let TokenTree::Ident(ident) = &trees[i] {
-            if ident.to_string() == "pub" {
-                vis.push_str("pub ");
-                i += 1;
-                if i < trees.len() {
-                    if let TokenTree::Group(group) = &trees[i] {
-                        if group.delimiter() == Delimiter::Parenthesis {
-                            vis.push_str(&format!("({}) ", group.stream()));
-                            i += 1;
-                        }
-                    }
+    // Verify parameters: find parenthesis group
+    let mut param_found = false;
+    for tree in &trees {
+        if let TokenTree::Group(group) = tree {
+            if group.delimiter() == Delimiter::Parenthesis {
+                if !group.stream().is_empty() {
+                    return r#"compile_error!("entry function must have zero arguments");"#
+                        .parse()
+                        .unwrap();
                 }
-                continue;
-            }
-            if ident.to_string() == "fn" {
-                i += 1;
+                param_found = true;
                 break;
             }
         }
-        i += 1;
     }
 
-    if i >= trees.len() {
-        return r#"compile_error!("`#[yokio::main]` must be placed on a function definition.");"#
+    if !param_found {
+        return r#"compile_error!("expected function definition with parameter list `()`");"#
             .parse()
             .unwrap();
     }
 
-    let fn_name = match &trees[i] {
-        TokenTree::Ident(ident) => ident.to_string(),
-        _ => return r#"compile_error!("expected function name");"#.parse().unwrap(),
-    };
-    i += 1;
-
-    if i >= trees.len() {
-        return r#"compile_error!("expected function parameters");"#
-            .parse()
-            .unwrap();
-    }
-    match &trees[i] {
-        TokenTree::Group(group) if group.delimiter() == Delimiter::Parenthesis => {
-            if !group.stream().is_empty() {
-                return r#"compile_error!("entry function must have zero arguments");"#
-                    .parse()
-                    .unwrap();
-            }
-        }
-        _ => {
-            return r#"compile_error!("expected function parameters in parentheses");"#
-                .parse()
-                .unwrap()
-        }
-    }
-    i += 1;
-
-    let mut return_type = String::new();
-    let mut body_group = None;
-
-    while i < trees.len() {
-        match &trees[i] {
-            TokenTree::Group(group) if group.delimiter() == Delimiter::Brace => {
-                body_group = Some(group.stream());
+    // Find the body block `{ ... }`
+    let mut brace_idx = None;
+    for (idx, tree) in trees.iter().enumerate() {
+        if let TokenTree::Group(group) = tree {
+            if group.delimiter() == Delimiter::Brace {
+                brace_idx = Some(idx);
                 break;
             }
-            tt => {
-                return_type.push_str(&tt.to_string());
-                return_type.push(' ');
-            }
         }
-        i += 1;
     }
 
-    let Some(body) = body_group else {
+    let Some(idx) = brace_idx else {
         return r#"compile_error!("expected function body block `{ ... }`");"#
             .parse()
             .unwrap();
     };
 
-    let ret_decl = if return_type.trim().is_empty() {
-        String::new()
-    } else {
-        return_type.trim().to_string()
+    let sig: TokenStream = trees[..idx].iter().cloned().collect();
+    let body = match &trees[idx] {
+        TokenTree::Group(group) => group.stream(),
+        _ => unreachable!(),
     };
 
     let test_attr = if is_test { "#[test]\n" } else { "" };
 
     let expanded = format!(
-        r#"{test_attr}{vis}fn {fn_name}() {ret_decl} {{
+        r#"{test_attr} {sig} {{
     let __yokio_rt = ::yokio::Runtime::new().expect("failed to create Yokio runtime");
     __yokio_rt.run_with(move || {{
         {body}
