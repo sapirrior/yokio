@@ -14,6 +14,25 @@ pub(crate) mod epoll;
 #[cfg(target_os = "linux")]
 pub(crate) use epoll::Selector;
 
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+pub(crate) mod kqueue;
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+pub(crate) use kqueue::Selector;
+
 #[cfg(target_os = "windows")]
 pub(crate) mod windows;
 #[cfg(target_os = "windows")]

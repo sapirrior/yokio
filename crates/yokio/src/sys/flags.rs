@@ -21,6 +21,33 @@ pub(crate) mod os_flags {
     pub(crate) const DOORBELL: u32 = (libc::EPOLLIN | libc::EPOLLET) as u32;
 }
 
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+pub(crate) mod os_flags {
+    /// Readable readiness mask.
+    pub(crate) const READABLE: u32 = 0x01;
+    /// Writable readiness mask.
+    pub(crate) const WRITABLE: u32 = 0x02;
+    /// Error condition mask.
+    pub(crate) const ERROR: u32 = 0x04;
+    /// Hangup condition mask.
+    pub(crate) const HUP: u32 = 0x08;
+    /// Peer closed connection mask.
+    pub(crate) const RDHUP: u32 = 0x10;
+    /// Edge-triggered mode mask.
+    pub(crate) const EDGE: u32 = 0x20;
+    /// One-shot trigger mode mask.
+    pub(crate) const ONESHOT: u32 = 0x40;
+    /// Doorbell registration mask.
+    pub(crate) const DOORBELL: u32 = READABLE | EDGE;
+}
+
 #[cfg(target_os = "windows")]
 pub(crate) mod os_flags {
     use windows_sys::Win32::Networking::WinSock::{POLLERR, POLLHUP, POLLIN, POLLOUT};

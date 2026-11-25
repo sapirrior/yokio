@@ -2,6 +2,16 @@
 
 #![allow(unsafe_code)]
 
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+use crate::sys::os_flags;
+
 #[cfg(target_os = "windows")]
 #[derive(Copy, Clone, Default)]
 pub(crate) struct WinEvent {
@@ -13,6 +23,15 @@ pub(crate) struct WinEvent {
 pub(crate) struct Events {
     #[cfg(target_os = "linux")]
     pub(crate) raw: Vec<libc::epoll_event>,
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    pub(crate) raw: Vec<libc::kevent>,
     #[cfg(target_os = "windows")]
     pub(crate) raw: Vec<WinEvent>,
     pub(crate) len: usize,
@@ -26,6 +45,20 @@ impl Events {
         {
             let mut raw = Vec::with_capacity(cap);
             raw.resize(cap, libc::epoll_event { events: 0, u64: 0 });
+            Self { raw, len: 0 }
+        }
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ))]
+        {
+            let mut raw = Vec::with_capacity(cap);
+            let zero = unsafe { std::mem::zeroed::<libc::kevent>() };
+            raw.resize(cap, zero);
             Self { raw, len: 0 }
         }
         #[cfg(target_os = "windows")]
@@ -66,6 +99,33 @@ impl Events {
         #[cfg(target_os = "linux")]
         {
             self.raw[..self.len].iter().map(|ev| (ev.u64, ev.events))
+        }
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ))]
+        {
+            self.raw[..self.len].iter().map(|ev| {
+                let token = ev.udata as usize as u64;
+                let mut flags = 0u32;
+                if ev.filter == libc::EVFILT_READ {
+                    flags |= os_flags::READABLE;
+                }
+                if ev.filter == libc::EVFILT_WRITE {
+                    flags |= os_flags::WRITABLE;
+                }
+                if (ev.flags & libc::EV_ERROR) != 0 {
+                    flags |= os_flags::ERROR;
+                }
+                if (ev.flags & libc::EV_EOF) != 0 {
+                    flags |= os_flags::HUP | os_flags::RDHUP;
+                }
+                (token, flags)
+            })
         }
         #[cfg(target_os = "windows")]
         {
